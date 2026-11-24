@@ -23,6 +23,9 @@
 /*SEG*/
 .card.pad{background:var(--surface);border:1px solid var(--line);border-radius:10px;margin-top:10px;padding:12px}
 tr[data-act]{cursor:pointer}
+table.ut{min-width:560px}
+table.ut td:first-child{white-space:normal;min-width:180px}
+tr.grp td{text-align:left!important;font-weight:700;background:var(--bg);white-space:normal}
 #sheet>button{width:100%}
 .seg{display:flex;gap:6px;overflow-x:auto;padding:12px 0 2px;scrollbar-width:none}
 .seg button{flex:none;border-radius:20px;padding:6px 14px;min-height:36px}
@@ -256,20 +259,46 @@ function fname(p,onlyUser,ext){
   const u=onlyUser?S.users.find(x=>x.id===onlyUser).name:'Semua user';
   return `Pembagian ${p.name} - ${u}.${ext}`.replace(/[\\/:*?"<>|]/g,'-');
 }
+function userTable(p,c,u){
+  const as=p.allocs.filter(a=>a.u===u.id&&c.byId[a.i]).sort((x,z)=>{const a=c.byId[x.i],b=c.byId[z.i];return a.c.localeCompare(b.c)||a.p.localeCompare(b.p)});
+  let tq=0,tv=0;
+  const rows=as.map(a=>{const it=c.byId[a.i],v=c.val(a);tq+=a.q;tv+=v;return[it.c,it.p,a.q,Math.round(it.s/it.q),Math.round(v)]});
+  return{rows,tq,tv:Math.round(tv),fee:Math.round(tv*u.fee/100)};
+}
+const HEAD=['Outlet','Produk','Qty','Harga satuan (Rp)','Nilai (Rp)'];
 function exportXlsx(p,onlyUser){
-  const r=rowsFor(p,onlyUser);
+  const r=rowsFor(p,onlyUser),c=calc(p);
   const wb=XLSX.utils.book_new();
   const add=(rows,name,w)=>{const ws=XLSX.utils.aoa_to_sheet(rows);ws['!cols']=w.map(x=>({wch:x}));XLSX.utils.book_append_sheet(wb,ws,name)};
-  add(r.rekap,'Rekap User',[26,16,10,18,8,16]);
-  add(r.detail,'Detail',[22,32,36,8,14,16,8,14]);
+  if(!onlyUser)add(r.rekap,'Rekap User',[26,16,10,18,8,16]);
+  const det=[];let gq=0,gv=0,gf=0;
+  for(const u of S.users){
+    if(onlyUser&&u.id!==onlyUser)continue;
+    const t=userTable(p,c,u);
+    if(!t.rows.length)continue;
+    gq+=t.tq;gv+=t.tv;gf+=t.fee;
+    det.push([`Pembagian ${u.name}`,`Periode ${p.name}`,'','Fee %',u.fee],HEAD,...t.rows,['TOTAL PEMBAGIAN','',t.tq,'',t.tv],[`Fee ${u.fee}%`,'','','',t.fee],[],[]);
+  }
+  if(!onlyUser&&det.length)det.push(['TOTAL SEMUA USER','',gq,'',gv],['Total fee','','','',gf]);
+  add(det.length?det:[['Belum ada pembagian']],'Detail',[32,38,8,18,16]);
   if(!onlyUser)add(r.sisa,'Sisa Stok',[32,36,10,10,10,16]);
   saveFile(fname(p,onlyUser,'xlsx'),XLSX.write(wb,{bookType:'xlsx',type:'array'}));
 }
 function exportCsv(p,onlyUser){
-  const r=rowsFor(p,onlyUser);
+  const c=calc(p);
   const cell=v=>typeof v==='string'&&/[;"\r\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':String(v);
-  const csv='﻿'+r.detail.map(x=>x.map(cell).join(';')).join('\r\n');
-  saveFile(fname(p,onlyUser,'csv'),csv);
+  const lines=[];
+  for(const u of S.users){
+    if(onlyUser&&u.id!==onlyUser)continue;
+    const t=userTable(p,c,u);
+    if(lines.length)lines.push('');
+    lines.push([`Pembagian ${u.name}`,`Periode ${p.name}`,'','Fee %',u.fee].map(cell).join(';'));
+    lines.push(HEAD.map(cell).join(';'));
+    for(const r of t.rows)lines.push(r.map(cell).join(';'));
+    lines.push(['TOTAL PEMBAGIAN','',t.tq,'',t.tv].map(cell).join(';'));
+    lines.push([`Fee ${u.fee}%`,'','','',t.fee].map(cell).join(';'));
+  }
+  saveFile(fname(p,onlyUser,'csv'),'﻿'+lines.join('\r\n'));
 }
 function exportPdf(p,onlyUser){
   const J=window.jspdf;
@@ -277,31 +306,30 @@ function exportPdf(p,onlyUser){
   const doc=new J.jsPDF({unit:'pt',format:'a4'});
   const c=calc(p),R=n=>rp(n).replace(' ',' ');
   const users=S.users.filter(u=>!onlyUser||u.id===onlyUser);
-  const green=[11,107,93];
+  const green=[11,107,93],soft=[223,241,237];
+  const right={halign:'right'};
   doc.setFontSize(15);doc.text('Rekap Pembagian Produk',40,44);
   doc.setFontSize(10);doc.text('Periode: '+p.name,40,60);
-  let y=74;
+  let first=true;
   if(!onlyUser){
     let tq=0,tv=0,tf=0;
     const body=users.map(u=>{const r=c.users[u.id];tq+=r.qty;tv+=r.value;tf+=r.fee;return[u.name,n0(r.qty),R(r.value),u.fee+'%',R(r.fee)]});
-    doc.autoTable({startY:y,head:[['User','Qty','Pemakaian','Fee %','Fee']],body,foot:[['Total',n0(tq),R(tv),'',R(tf)]],styles:{fontSize:9},headStyles:{fillColor:green},footStyles:{fillColor:[223,241,237],textColor:20},columnStyles:{1:{halign:'right'},2:{halign:'right'},3:{halign:'right'},4:{halign:'right'}}});
-    y=doc.lastAutoTable.finalY+26;
+    doc.autoTable({startY:74,head:[['User','Qty','Total pembagian','Fee %','Fee']],body,foot:[['Total',n0(tq),R(tv),'',R(tf)]],styles:{fontSize:9},headStyles:{fillColor:green},footStyles:{fillColor:soft,textColor:20},columnStyles:{1:right,2:right,3:right,4:right}});
+    first=false;
   }
   for(const u of users){
-    const as=p.allocs.filter(a=>a.u===u.id&&c.byId[a.i]);
-    if(!as.length)continue;
-    const g=new Map();
-    for(const a of as){const it=c.byId[a.i];if(!g.has(it.c))g.set(it.c,[]);g.get(it.c).push(a)}
-    const body=[];let tq=0,tv=0;
-    for(const [oc,list] of [...g].sort((a,b)=>a[0].localeCompare(b[0]))){
-      const ov=list.reduce((x,a)=>x+c.val(a),0);
-      body.push([{content:oc+'  ·  '+R(ov),colSpan:4,styles:{fontStyle:'bold',fillColor:[238,243,241]}}]);
-      for(const a of list.sort((x,z)=>c.byId[x.i].p.localeCompare(c.byId[z.i].p))){const it=c.byId[a.i],v=c.val(a);tq+=a.q;tv+=v;body.push([it.p,n0(a.q),R(it.s/it.q),R(v)])}
-    }
-    if(y>740){doc.addPage();y=44}
-    doc.setFontSize(12);doc.text(`${u.name}  (fee ${u.fee}%)`,40,y);
-    doc.autoTable({startY:y+6,head:[['Produk','Qty','Harga satuan','Nilai']],body,foot:[['Total pemakaian',n0(tq),'',R(tv)],['Fee '+u.fee+'%','','',R(tv*u.fee/100)]],showFoot:'lastPage',styles:{fontSize:8.5},headStyles:{fillColor:green},footStyles:{fillColor:[223,241,237],textColor:20},columnStyles:{1:{halign:'right'},2:{halign:'right'},3:{halign:'right'}}});
-    y=doc.lastAutoTable.finalY+26;
+    const t=userTable(p,c,u);
+    if(!t.rows.length)continue;
+    if(!first)doc.addPage();
+    first=false;
+    const top=doc.getNumberOfPages()===1&&onlyUser?74:44;
+    doc.setFontSize(13);doc.text(`${u.name}  ·  fee ${u.fee}%`,40,top);
+    doc.setFontSize(9);doc.text('Periode: '+p.name,40,top+14);
+    doc.autoTable({startY:top+24,head:[HEAD.map((h,i)=>i>=2?{content:h.replace(' (Rp)',''),styles:right}:h)],
+      body:t.rows.map(r=>[r[0],r[1],n0(r[2]),R(r[3]),R(r[4])]),
+      foot:[[{content:'TOTAL PEMBAGIAN',colSpan:2},{content:n0(t.tq),styles:right},'',{content:R(t.tv),styles:right}],[{content:`Fee ${u.fee}%`,colSpan:4},{content:R(t.fee),styles:right}]],
+      showFoot:'lastPage',styles:{fontSize:8},headStyles:{fillColor:green},footStyles:{fillColor:soft,textColor:20,fontSize:9},
+      columnStyles:{0:{cellWidth:130},2:right,3:right,4:right}});
   }
   saveFile(fname(p,onlyUser,'pdf'),doc.output('arraybuffer'));
 }
@@ -439,7 +467,7 @@ function vRekap(p){
     rows+=`<tr data-act="rekuser" data-id="${u.id}"><td><button class="lnk" data-act="rekuser" data-id="${u.id}">${esc(u.name)} ›</button></td><td class="num">${n0(r.qty)}</td><td class="num">${rp(r.value)}</td><td class="num">${u.fee}%</td><td class="num">${rp(r.fee)}</td></tr>`}
   let sq=0,sv=0;for(const it of p.items)if(it.q>0){const l=it.q-(c.ab[it.id]||0);sq+=l;sv+=l*it.s/it.q}
   return`<h2>Rekap ${esc(p.name)}</h2>
-  ${S.users.length?`<div class="tablewrap"><table><thead><tr><th>User</th><th>Qty</th><th>Pemakaian</th><th>Fee %</th><th>Fee</th></tr></thead><tbody>${rows}<tr class="tot"><td>Total</td><td class="num">${n0(tq)}</td><td class="num">${rp(tv)}</td><td></td><td class="num">${rp(tf)}</td></tr></tbody></table></div><p class="muted sm">Ketuk nama user untuk melihat produk dan hasil pembagiannya.</p>`:'<p class="muted">Belum ada user.</p>'}
+  ${S.users.length?`<div class="tablewrap"><table><thead><tr><th>User</th><th>Qty</th><th>Total pembagian</th><th>Fee %</th><th>Fee</th></tr></thead><tbody>${rows}<tr class="tot"><td>Total</td><td class="num">${n0(tq)}</td><td class="num">${rp(tv)}</td><td></td><td class="num">${rp(tf)}</td></tr></tbody></table></div><p class="muted sm">Ketuk nama user untuk melihat produk dan hasil pembagiannya.</p>`:'<p class="muted">Belum ada user.</p>'}
   <div class="tiles"><div class="tile"><div class="l">Belum dibagi</div><div class="v num">${n0(sq)}</div><div class="muted sm">qty</div></div><div class="tile"><div class="l">Nilai belum dibagi</div><div class="v num">${rp(sv)}</div></div></div>
   <div class="btns" style="margin-top:14px"><button class="pri" data-act="dlsheet" data-id="">Unduh rekap semua user</button></div>`;
 }
@@ -447,16 +475,21 @@ function vRekapUser(p,c,u){
   const r=c.users[u.id];
   const g=new Map();
   for(const a of p.allocs){if(a.u!==u.id||!c.byId[a.i])continue;const it=c.byId[a.i];if(!g.has(it.c))g.set(it.c,[]);g.get(it.c).push(a)}
-  const det=[...g].sort((a,b)=>a[0].localeCompare(b[0])).map(([cn,as])=>{
+  let rows='';
+  for(const [cn,as] of [...g].sort((a,b)=>a[0].localeCompare(b[0]))){
     const cv=as.reduce((s,a)=>s+c.val(a),0);
-    return`<div class="card pad"><div class="row"><b class="grow cname">${esc(cn)}</b><span class="num sm muted">${rp(cv)}</span></div>`+
-    as.sort((x,z)=>c.byId[x.i].p.localeCompare(c.byId[z.i].p)).map(a=>{const it=c.byId[a.i];return`<div class="line"><div class="grow"><div class="pname">${esc(it.p)}</div><div class="muted sm num">${n0(a.q)} × ${rp(it.s/it.q)}</div></div><div class="side"><b class="num">${rp(c.val(a))}</b><button class="sm" data-act="unalloc" data-id="${a.id}" aria-label="Batalkan pembagian ${esc(it.p)}">Batal</button></div></div>`}).join('')+`</div>`}).join('');
+    rows+=`<tr class="grp"><td colspan="5">${esc(cn)} · ${rp(cv)}</td></tr>`;
+    rows+=as.sort((x,z)=>c.byId[x.i].p.localeCompare(c.byId[z.i].p)).map(a=>{const it=c.byId[a.i];return`<tr><td>${esc(it.p)}</td><td class="num">${n0(a.q)}</td><td class="num">${rp(it.s/it.q)}</td><td class="num">${rp(c.val(a))}</td><td><button class="sm" data-act="unalloc" data-id="${a.id}" aria-label="Batalkan pembagian ${esc(it.p)}">Batal</button></td></tr>`}).join('');
+  }
+  const table=g.size?`<div class="tablewrap"><table class="ut"><thead><tr><th>Produk</th><th>Qty</th><th>Harga satuan</th><th>Nilai</th><th></th></tr></thead><tbody>${rows}
+    <tr class="tot"><td>Total pembagian</td><td class="num">${n0(r.qty)}</td><td></td><td class="num">${rp(r.value)}</td><td></td></tr>
+    <tr class="tot"><td colspan="3">Fee ${u.fee}%</td><td class="num">${rp(r.fee)}</td><td></td></tr></tbody></table></div>`:'<p class="muted empty">Belum ada pembagian untuk user ini.</p>';
   return`<div class="row" style="margin-top:12px"><button class="sm" data-act="rekback">‹ Semua user</button><span class="grow"></span><button class="sm pri" data-act="dlsheet" data-id="${u.id}">Unduh</button></div>
   <h2 style="margin-top:14px">${esc(u.name)} · ${esc(p.name)}</h2>
-  <div class="tiles"><div class="tile"><div class="l">Qty dibagi</div><div class="v num">${n0(r.qty)}</div><div class="muted sm">${r.cust.size} outlet</div></div>
-  <div class="tile"><div class="l">Pemakaian</div><div class="v num">${rp(r.value)}</div></div>
+  <div class="tiles"><div class="tile"><div class="l">Total qty dibagi</div><div class="v num">${n0(r.qty)}</div><div class="muted sm">${r.cust.size} outlet</div></div>
+  <div class="tile"><div class="l">Total pembagian</div><div class="v num">${rp(r.value)}</div></div>
   <div class="tile" style="grid-column:1/-1"><div class="l">Fee ${u.fee}%</div><div class="v num" style="color:var(--accent)">${rp(r.fee)}</div></div></div>
-  <h2>Produk dibagikan</h2>${det||'<p class="muted empty">Belum ada pembagian untuk user ini.</p>'}`;
+  <h2>Tabel pembagian</h2>${table}`;
 }
 function vLain(p){
   const per=S.periods.map(x=>`<div class="prow"><div class="grow"><b>${esc(x.name)}</b><div class="muted sm">${new Set(x.items.map(i=>i.c)).size} customer · ${x.items.length} baris</div></div>${x.id===S.cur?'<span class="badge done">Aktif</span>':`<button class="sm" data-act="useper" data-id="${x.id}">Buka</button>`}<button class="sm" data-act="editper" data-id="${x.id}">Ubah</button></div>`).join('');
